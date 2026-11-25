@@ -9,3 +9,13 @@ cache/
 *.torrent
 *.mp4
 *.mkv
+
+# Reproducible local VM transfer bundle (not source or upstream PR content).
+/features/security-hardening/m1-staging.tar.gz
+/features/security-hardening/m1-staging.tar.gz.sha256
+features/download-controls/download-controls-update.tar.gz
+features/download-controls/download-controls-update.tar.gz.sha256
+
+# Private deployment notes; exclude from published changes.
+features/download-controls/VM_UPDATE.md
+features/security-hardening/TV_CHECKPOINT.md

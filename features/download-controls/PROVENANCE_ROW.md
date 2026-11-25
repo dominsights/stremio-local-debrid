@@ -1,0 +1,1 @@
+| OpenAI Codex GPT-6 | dominsights | 2026-11-25T21:44:57Z | Application source, tests, dependencies and documentation | Implement and verify manual torrent stop/keep/delete controls and prepare combined M1 VM update; no model training performed in this task | https://github.com/dominsights | `3ec5914fa182d15fcec891de95423552e8de952630fc88fff4eadc61025a8b25` |

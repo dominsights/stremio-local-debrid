@@ -15,3 +15,26 @@ export function languageCode(value = 'en-US') {
 
 export const translation = value => locales[languageCode(value)];
 export const direction = value => /^(ar|fa|he|ur)-/.test(languageCode(value)) ? 'rtl' : 'ltr';
+
+// New controls fall back to English until community translations are available.
+export function downloadText(language) {
+  return languageCode(language).startsWith('pt-') ? {
+    actions: 'Ações', manage: 'Parar download…', stopped: 'Parado', title: 'Parar este torrent',
+    explanation: 'Todos os arquivos abaixo pertencem ao mesmo torrent. Feche a reprodução em todos os dispositivos antes de parar.',
+    keep: 'Parar e manter arquivos', remove: 'Parar e excluir arquivos', cancel: 'Cancelar',
+    warning: 'Excluir remove todos os arquivos deste torrent do cache. Será necessário baixá-los novamente.',
+    kept: 'Download parado. Arquivos mantidos; reproduza novamente para retomar.', deleted: 'Torrent e arquivos removidos do cache.',
+    activeDownload: 'Este torrent está em reprodução. Feche o vídeo em todos os dispositivos e tente novamente.',
+    invalidAction: 'Ação inválida ou não autorizada. Abra o painel e tente novamente.',
+    downloadMissing: 'Download não encontrado.', changesFailed: 'Não foi possível atualizar o download. Tente novamente.'
+  } : {
+    actions: 'Actions', manage: 'Stop download…', stopped: 'Stopped', title: 'Stop this torrent',
+    explanation: 'All files below belong to the same torrent. Close playback on every device before stopping it.',
+    keep: 'Stop and keep files', remove: 'Stop and delete files', cancel: 'Cancel',
+    warning: 'Deleting removes every cached file for this torrent. You will need to download them again.',
+    kept: 'Download stopped. Files kept; play again to resume.', deleted: 'Torrent and cached files removed.',
+    activeDownload: 'This torrent is playing. Close the video on every device and try again.',
+    invalidAction: 'Invalid or unauthorized action. Open the dashboard and try again.',
+    downloadMissing: 'Download not found.', changesFailed: 'Could not update this download. Please try again.'
+  };
+}

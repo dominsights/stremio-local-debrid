@@ -110,6 +110,8 @@ After changing configuration or updating the code, rerun `npm ci` and `npm run i
 
 The protected dashboard shows cached files and detected addons. `downloads.json` and `sources.json` beside the private manifest provide JSON status. A language-specific manifest uses `/<private-token>/<locale>/manifest.json`; the original URL continues to use the configured default language.
 
+The dashboard also offers **Stop download…**. Its confirmation page lists all affected files and lets you keep them for later playback or permanently delete the entire torrent from the cache. Close playback on every device first. Retained unfinished downloads stay stopped after a service restart and resume when you play the source again. Deleting releases their cache reservation; other torrents are unaffected. See [download controls](features/download-controls/README.md).
+
 ## Troubleshooting
 
 - **The TV cannot connect:** check the computer is awake, `baseUrl` uses its LAN address, both devices can communicate and TCP port 7810 is allowed. Guest Wi-Fi or client isolation can block access.

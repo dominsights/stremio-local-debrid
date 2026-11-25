@@ -9,8 +9,8 @@ import { spawn } from 'node:child_process';
 import WebTorrent from 'webtorrent';
 import { createAddonSources, fetchAddonStreams } from './addons.mjs';
 import { torrentDescriptor } from './torrents.mjs';
-import { locales, languageCode, translation } from './i18n.mjs';
-import { renderDashboard, renderGuide } from './ui.mjs';
+import { locales, languageCode, translation, downloadText } from './i18n.mjs';
+import { renderDashboard, renderGuide, renderDownloadControl } from './ui.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const validHash = /^[a-f0-9]{40}$/i;
@@ -63,13 +63,14 @@ export async function createService(config, options = {}) {
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
-  const persist = () => {
+  const persist = (strict = false) => {
     const content = JSON.stringify([...jobs.values()], null, 2);
-    saving = saving.then(async () => {
+    const operation = saving.then(async () => {
       await writeFile(join(stateDir, 'downloads.json.tmp'), content, { mode: 0o600 });
       await rename(join(stateDir, 'downloads.json.tmp'), join(stateDir, 'downloads.json'));
-    }).catch(error => console.error('Estado:', error.message));
-    return saving;
+    });
+    saving = operation.catch(error => console.error('Estado:', error.message));
+    return strict ? operation : saving;
   };
   const sign = payload => createHmac('sha256', config.token).update(payload).digest('base64url');
   const playURL = descriptor => {
@@ -135,7 +136,7 @@ export async function createService(config, options = {}) {
       if (allocated() + extraBytes <= config.maxCacheBytes && free >= extraBytes + config.minFreeBytes) break;
       const related = [...jobs.values()].filter(job => job.infoHash === hash);
       const entry = entries.get(hash);
-      if (entry?.readers || (entry && Date.now() - entry.lastAccess < 60000) || related.some(job => job.status !== 'complete')) continue;
+      if (torrentLocks.has(hash) || entry?.readers || (entry && Date.now() - entry.lastAccess < 60000) || related.some(job => job.status !== 'complete')) continue;
       if (entry?.torrent && !entry.torrent.destroyed) await new Promise(done => client.remove(entry.torrent, { destroyStore: false }, () => done()));
       entries.delete(hash);
       await rm(join(cacheDir, hash), { recursive: true, force: true });
@@ -146,7 +147,14 @@ export async function createService(config, options = {}) {
     if (allocated() + extraBytes > config.maxCacheBytes || free < extraBytes + config.minFreeBytes) throw fault(507, 'cacheFull');
   };
   let selection = Promise.resolve();
-  const selectFile = async (descriptor, download) => {
+  const torrentLocks = new Map();
+  const serializeTorrent = (hash, operation) => {
+    const result = (torrentLocks.get(hash) || Promise.resolve()).catch(() => {}).then(operation);
+    torrentLocks.set(hash, result);
+    void result.finally(() => { if (torrentLocks.get(hash) === result) torrentLocks.delete(hash); }).catch(() => {});
+    return result;
+  };
+  const selectFile = (descriptor, download, reading = false) => serializeTorrent(descriptor.infoHash.toLowerCase(), async () => {
     const entry = await getEntry(descriptor);
     const operation = selection.then(async () => {
       entry.lastAccess = Date.now();
@@ -167,16 +175,48 @@ export async function createService(config, options = {}) {
         updateSleep();
         await persist();
       }
+      if (reading) entry.readers++;
       return { entry, file };
     });
     selection = operation.catch(() => {});
     return operation;
-  };
+  });
   const listDownloads = () => [...jobs.values()].map(job => {
     const entry = entries.get(job.infoHash);
     const file = entry?.torrent?.files[job.fileIdx];
-    const downloaded = file?.done || job.status === 'complete' ? job.length : Math.max(0, file?.downloaded || 0);
-    return { filename: job.filename, status: file?.done ? 'complete' : job.status, bytes: job.length, downloaded, progress: job.length ? downloaded / job.length : 0, peers: entry?.torrent?.numPeers || 0, speed: entry?.torrent?.downloadSpeed || 0, path: job.path, error: job.error };
+    const downloaded = file?.done || job.status === 'complete' ? job.length : Math.max(0, file?.downloaded ?? job.downloaded ?? 0);
+    return { infoHash: job.infoHash, filename: job.filename, status: file?.done ? 'complete' : job.status, bytes: job.length, downloaded, progress: job.length ? downloaded / job.length : 0, peers: entry?.torrent?.numPeers || 0, speed: entry?.torrent?.downloadSpeed || 0, path: job.path, error: job.error };
+  });
+  const stopDownload = (hash, mode) => serializeTorrent(hash, async () => {
+    const operation = selection.then(async () => {
+      const related = [...jobs.values()].filter(job => job.infoHash === hash);
+      if (!related.length) throw fault(404, 'downloadMissing');
+      const entry = entries.get(hash);
+      if (entry?.readers) throw fault(409, 'activeDownload');
+      const progress = new Map(related.map(job => [job, { downloaded: entry?.torrent?.files[job.fileIdx]?.downloaded ?? job.downloaded ?? 0, done: entry?.torrent?.files[job.fileIdx]?.done }]));
+      if (entry?.torrent && !entry.torrent.destroyed) {
+        await new Promise((done, reject) => client.remove(entry.torrent, { destroyStore: false }, error => error ? reject(error) : done()));
+      }
+      entries.delete(hash);
+      // Record the stop before deleting anything; a failed delete must not restart downloads.
+      for (const job of related) {
+        if (progress.get(job).done) job.status = 'complete';
+        else if (job.status !== 'complete') job.status = 'stopped';
+        job.downloaded = progress.get(job).downloaded;
+        delete job.error;
+      }
+      await persist(true);
+      if (mode === 'delete') {
+        // Never trust a persisted job.path as a filesystem deletion target.
+        await rm(join(cacheDir, hash), { recursive: true, force: true });
+        await rm(join(stateDir, 'torrents', `${hash}.torrent`), { force: true });
+        for (const job of related) jobs.delete(`${hash}:${job.fileIdx}`);
+        await persist(true);
+      }
+      updateSleep();
+    });
+    selection = operation.catch(() => {});
+    return operation;
   });
   const defaults = translation(config.language);
   const manifest = { id: 'local.stremio.cache', version: '1.2.0', name: defaults.name, description: defaults.description, logo: `${config.baseUrl}/${config.token}/assets/logo.png`, resources: ['stream'], types: ['movie', 'series', 'anime', 'other'], catalogs: [], behaviorHints: { configurable: true, p2p: true } };
@@ -217,7 +257,8 @@ export async function createService(config, options = {}) {
   };
   const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
   const server = http.createServer(async (req, res) => {
-    let t = translation(config.language);
+    let language = languageCode(config.language);
+    let t = translation(language);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -231,8 +272,42 @@ export async function createService(config, options = {}) {
       const path = requestURL.pathname.split('/').filter(Boolean);
       if (path[0] !== config.token) throw fault(404, 'notFound');
       const prefixLanguage = locales[path[1]] ? path.splice(1, 1)[0] : null;
-      const language = languageCode(requestURL.searchParams.get('lang') || prefixLanguage || config.language || req.headers['accept-language']);
+      language = languageCode(requestURL.searchParams.get('lang') || prefixLanguage || config.language || req.headers['accept-language']);
       t = translation(language);
+      if (path[1] === 'downloads' && path.length === 4 && path[3] === 'stop') {
+        const hash = path[2];
+        if (!/^[a-f0-9]{40}$/.test(hash)) throw fault(404, 'downloadMissing');
+        const csrf = sign(`download-control:${hash}`);
+        if (req.method === 'POST') {
+          // No mutations through links, CORS or cross-site forms without the signed form field.
+          // Native forms under no-referrer send Origin: null. Only browser-verified
+          // same-origin requests may use it; the signed form field is still mandatory.
+          const sameOriginForm = req.headers.origin === 'null' && req.headers['sec-fetch-site'] === 'same-origin';
+          if (req.headers.origin && req.headers.origin !== new URL(config.baseUrl).origin && !sameOriginForm) throw fault(403, 'invalidAction');
+          if (req.headers['sec-fetch-site'] === 'cross-site') throw fault(403, 'invalidAction');
+          if (req.headers['content-type']?.split(';')[0].trim() !== 'application/x-www-form-urlencoded') throw fault(415, 'invalidAction');
+          let body = '';
+          for await (const chunk of req) {
+            body += chunk.toString('utf8');
+            if (Buffer.byteLength(body) > 1024) throw fault(413, 'invalidAction');
+          }
+          const form = new URLSearchParams(body);
+          const supplied = Buffer.from(form.get('csrf') || '');
+          const expected = Buffer.from(csrf);
+          if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected) || !['keep', 'delete'].includes(form.get('mode'))) throw fault(403, 'invalidAction');
+          try { await stopDownload(hash, form.get('mode')); }
+          catch (error) { if (error.status) throw error; throw fault(500, 'changesFailed'); }
+          res.writeHead(303, { Location: `${config.baseUrl}/${config.token}/${language}/?notice=${form.get('mode') === 'keep' ? 'kept' : 'deleted'}`, 'Cache-Control': 'no-store' });
+          res.end();
+          return;
+        }
+        if (!['GET', 'HEAD'].includes(req.method)) throw fault(405, 'invalidMethod');
+        const downloads = listDownloads().filter(job => job.infoHash === hash);
+        if (!downloads.length) throw fault(404, 'downloadMissing');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(req.method === 'HEAD' ? '' : renderDownloadControl(config, language, downloads, csrf));
+        return;
+      }
       if (!['GET', 'HEAD'].includes(req.method)) throw fault(405, 'invalidMethod');
       if (path[1] === 'manifest.json') { json(res, 200, { ...manifest, name: t.name, description: t.description, types: [...new Set([...manifest.types, ...addonSources.status().sources.flatMap(source => source.types)])] }); return; }
       if (path[1] === 'downloads.json') { json(res, 200, { downloads: listDownloads(), cacheBytes: allocated(), cacheLimitBytes: config.maxCacheBytes }); return; }
@@ -249,56 +324,61 @@ export async function createService(config, options = {}) {
         // media-src to fetch their video; all other content defaults to none.
         res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; media-src 'self'");
         const descriptor = decode(path[2]);
-        const { entry, file } = await selectFile(descriptor, false);
+        let { entry, file } = await selectFile(descriptor, false);
         let range;
         try { range = byteRange(req.headers.range, file.length); }
         catch (error) { res.setHeader('Content-Range', `bytes */${file.length}`); throw error; }
         if (res.destroyed) return;
-        if (req.method === 'GET') await selectFile(descriptor, true);
-        res.setHeader('Content-Type', mediaType(file.name));
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Content-Length', range.end - range.start + 1);
-        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`);
-        res.setHeader('Cache-Control', 'private, max-age=0');
-        if (range.status === 206) res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${file.length}`);
-        res.writeHead(range.status);
-        if (req.method === 'HEAD') { res.end(); return; }
-        entry.readers++;
-        const reader = file.createReadStream({ start: range.start, end: range.end });
-        const stop = () => reader.destroy();
-        res.once('close', stop);
+        let reserved = false;
         try {
-          await pipeline(Readable.from((async function* () {
-            let remaining = range.end - range.start + 1;
-            for await (const chunk of reader) {
-              const part = chunk.subarray(0, remaining);
-              remaining -= part.length;
-              yield part;
-              if (!remaining) break;
-            }
-          })()), res);
-        } catch (error) { if (!res.destroyed) throw error; }
-        finally { res.off('close', stop); reader.destroy(); entry.readers--; entry.lastAccess = Date.now(); }
+          if (req.method === 'GET') {
+            ({ entry, file } = await selectFile(descriptor, true, true));
+            reserved = true;
+          }
+          res.setHeader('Content-Type', mediaType(file.name));
+          res.setHeader('Accept-Ranges', 'bytes');
+          res.setHeader('Content-Length', range.end - range.start + 1);
+          res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`);
+          res.setHeader('Cache-Control', 'private, max-age=0');
+          if (range.status === 206) res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${file.length}`);
+          res.writeHead(range.status);
+          if (req.method === 'HEAD') { res.end(); return; }
+          const reader = file.createReadStream({ start: range.start, end: range.end });
+          const stop = () => reader.destroy();
+          res.once('close', stop);
+          try {
+            await pipeline(Readable.from((async function* () {
+              let remaining = range.end - range.start + 1;
+              for await (const chunk of reader) {
+                const part = chunk.subarray(0, remaining);
+                remaining -= part.length;
+                yield part;
+                if (!remaining) break;
+              }
+            })()), res);
+          } catch (error) { if (!res.destroyed) throw error; }
+          finally { res.off('close', stop); reader.destroy(); }
+        } finally { if (reserved) { entry.readers--; entry.lastAccess = Date.now(); } }
         return;
       }
       if (path.length === 1 || path[1] === 'configure' || path[1] === 'guide') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(path[1] === 'guide' ? renderGuide(config, language) : renderDashboard(config, language, listDownloads(), addonSources.status(), allocated()));
+        res.end(path[1] === 'guide' ? renderGuide(config, language) : renderDashboard(config, language, listDownloads(), addonSources.status(), allocated(), ['kept', 'deleted'].includes(requestURL.searchParams.get('notice')) ? downloadText(language)[requestURL.searchParams.get('notice')] : ''));
         return;
       }
       throw fault(404, 'notFound');
     } catch (error) {
-      if (!res.headersSent && !res.destroyed) json(res, error.status || 502, { error: t.errors[error.message] || error.message });
+      if (!res.headersSent && !res.destroyed) json(res, error.status || 502, { error: t.errors[error.message] || downloadText(language)[error.message] || error.message });
       else if (!res.destroyed) res.destroy();
     }
   });
   const maintenance = async () => {
     if (maintenanceRunning || closing) return;
     maintenanceRunning = true;
-    try {
+    const operation = selection.then(async () => {
       let changed = false;
       for (const [hash, entry] of entries) {
-        if (!entry.torrent?.ready || entry.torrent.destroyed) continue;
+        if (torrentLocks.has(hash) || !entry.torrent?.ready || entry.torrent.destroyed) continue;
         for (const index of entry.selected) {
           const file = entry.torrent.files[index];
           const job = jobs.get(`${hash}:${index}`);
@@ -323,7 +403,9 @@ export async function createService(config, options = {}) {
           await persist();
         }
       }
-    } finally { maintenanceRunning = false; updateSleep(); }
+    });
+    selection = operation.catch(() => {});
+    try { await operation; } finally { maintenanceRunning = false; updateSleep(); }
   };
   const timer = setInterval(() => void maintenance().catch(error => console.error('Cache:', error.message)), config.maintenanceIntervalMs || 5000);
   timer.unref();
