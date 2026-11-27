@@ -1,5 +1,7 @@
 # Download-controls verification (2026-11-25)
 
+> Historical verification chronology; current acceptance summary: [spec.md](spec.md). Earlier pending retry statements are superseded by the final explicit user result, not retroactively erased.
+
 Branch: `feature/download-controls`, based on M1 plus its credit commit `8162c96`. Implementation is uncommitted; no push, new PR, or VM deployment was performed by the agent.
 
 | Check | Observed result |

@@ -112,6 +112,10 @@ The protected dashboard shows cached files and detected addons. `downloads.json`
 
 The dashboard also offers **Stop download…**. Its confirmation page lists all affected files and lets you keep them for later playback or permanently delete the entire torrent from the cache. Close playback on every device first. Retained unfinished downloads stay stopped after a service restart and resume when you play the source again. Deleting releases their cache reservation; other torrents are unaffected. See [download controls](features/download-controls/README.md).
 
+## Development workflow
+
+Use [AGENTS.md](AGENTS.md), the [feature/milestone index](features/README.md) and the [Codex development guide](docs/DEVELOPMENT.md). Features have acceptance criteria and evidence; the shared local/CI command is `npm run check`. M0-M5 milestones and their history are preserved.
+
 ## Troubleshooting
 
 - **The TV cannot connect:** check the computer is awake, `baseUrl` uses its LAN address, both devices can communicate and TCP port 7810 is allowed. Guest Wi-Fi or client isolation can block access.

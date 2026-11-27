@@ -1,5 +1,7 @@
 # Download controls
 
+> Current acceptance contract: [spec.md](spec.md). This document preserves implementation notes and dated follow-ups; later explicit production results supersede earlier pending retry statements.
+
 Branch: `feature/download-controls`. Includes the existing M1 safe-media selection and browser response protections; PR #6 streaming-only mode is not imported.
 
 ## Behavior
@@ -22,7 +24,7 @@ Controls are provided in English and Portuguese; other locales use English for t
 - [x] Protect POST actions and constrain filesystem deletion targets.
 - [x] Exercise real local WebTorrent transfers, two files in one torrent, restart/resume, isolation from another torrent, cache release, form authorization and active playback.
 - [x] Run repository checks and record the environment-blocked startup validator in [RESULTS.md](RESULTS.md).
-- [ ] Staging acceptance deferred: user explicitly chose direct production deployment.
+- Staging acceptance was deferred by explicit user instruction; production-first deployment was authorized.
 - [x] User deployed combined M1 + controls to production; compatibility and manifest readiness passed, code backup created. User subsequently reported the controls worked.
 
 Manual checkpoint (staging first):
